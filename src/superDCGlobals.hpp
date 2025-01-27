@@ -146,27 +146,59 @@ std::pair<double *, nonleaf**> r_RankOneUpdate(double* Lam, int lamSize, std::pa
 
 
 
-std::pair<double*, double*> computeLeafEig(std::pair<int, int> dSize, double *D, int i){
-            
+std::pair<double*, double*> computeLeafEig(std::pair<int, int> dSize, double *D, int i) {
     std::pair<double*, double*> result;
-    double *E = new double[dSize.first];
-    double *EV = new double[dSize.first*dSize.second];
-    int *Isuppz = new int[2*dSize.second];
-            
-    double abstol = 1.234e-27;
-        
-    //cout << "Computing eigenvalues and eigenvectors for node: "<<(i+1)<<"\n";
-    int info = LAPACKE_dsyevr(LAPACK_ROW_MAJOR, 'V', 'A', 'U', dSize.first, D, dSize.second, 0., 0., 0, 0,abstol, &dSize.first, E, EV, dSize.second, Isuppz);
-            
-    if(info > 0){
-        cout<<"Eigensolver doesn't work";
+    int n = dSize.first;
+    int lda = dSize.second;
+
+    double *E = new double[n];
+    cusolverDnHandle_t handle;
+    cusolverDnCreate(&handle);
+
+    double *d_D, *d_E;
+    int *d_info;
+    int lwork = 0;
+    double *d_work;
+
+    cudaMalloc((void**)&d_D, n * lda * sizeof(double));
+    cudaMalloc((void**)&d_E, n * sizeof(double));
+    cudaMalloc((void**)&d_info, sizeof(int));
+
+    double *D_transposed = new double[n * lda];
+    for (int row = 0; row < n; ++row) {
+        for (int col = 0; col < n; ++col) {
+            D_transposed[col * lda + row] = D[row * lda + col];
+        }
+    }
+    cudaMemcpy(d_D, D_transposed, n * lda * sizeof(double), cudaMemcpyHostToDevice);
+ 
+
+    cusolverDnDsyevd_bufferSize(handle, CUSOLVER_EIG_MODE_NOVECTOR, CUBLAS_FILL_MODE_UPPER, n, d_D, lda, nullptr, &lwork);
+    cudaMalloc((void**)&d_work, lwork * sizeof(double));
+
+    int info;
+    cusolverDnDsyevd(handle, CUSOLVER_EIG_MODE_NOVECTOR, CUBLAS_FILL_MODE_UPPER, n, d_D, lda, d_E, d_work, lwork, d_info);
+
+    cudaMemcpy(E, d_E, n * sizeof(double), cudaMemcpyDeviceToHost);
+    cudaMemcpy(&info, d_info, sizeof(int), cudaMemcpyDeviceToHost);
+
+    if (info > 0) {
+        std::cerr << "Eigensolver failed for node: " << (i + 1) << "\n";
+         cusolverDnDestroy(handle);
+        cudaFree(d_D);
+        cudaFree(d_E);
+        cudaFree(d_info);
         exit(1);
     }
-            
     result.first = E;
-    result.second = EV;
-    E = NULL;        
-           
-    delete [] Isuppz;
+    delete[] D_transposed;
+
+    cudaFree(d_D);
+    cudaFree(d_E);
+    cudaFree(d_work);
+    cudaFree(d_info);
+
+    cusolverDnDestroy(handle);
+
     return result;
 }
